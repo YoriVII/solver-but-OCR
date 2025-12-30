@@ -55,9 +55,9 @@ public class ScannerService extends Service {
     private Trie trie;
 
     private static final String CHANNEL_ID = "OCR_Service_Channel";
-    private static final int RING_SIZE = 600; // Size of the scanner ring
+    private static final int RING_SIZE = 600; 
+    private static final String TAG = "OCR_DEBUG"; // Debug tag for logging
 
-    // Helper class for found letters
     private static class DetectedLetter {
         String text;
         Rect box;
@@ -84,22 +84,16 @@ public class ScannerService extends Service {
 
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         projectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-        
-        // Initialize OCR Brain
         recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
-        
-        // Initialize Dictionary Brain
         trie = new Trie();
         new Thread(() -> trie.loadDictionary(this)).start();
 
-        // Get Screen Metrics
         DisplayMetrics metrics = new DisplayMetrics();
         wm.getDefaultDisplay().getRealMetrics(metrics);
         screenWidth = metrics.widthPixels;
         screenHeight = metrics.heightPixels;
         screenDensity = metrics.densityDpi;
 
-        // Setup Screen Reader (Images will be pushed here)
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2);
 
         showRing();
@@ -107,21 +101,12 @@ public class ScannerService extends Service {
 
     private void showRing() {
         ringOverlay = new FrameLayout(this);
-        
-        // 1. The Visual Ring (Semi-transparent Green)
-        View circle = new View(this);
-        circle.setBackgroundResource(android.R.drawable.radiobutton_off_background);
-        circle.setAlpha(0.3f);
-        circle.setScaleX(20f); // Make it huge visually
-        circle.setScaleY(20f);
-        FrameLayout.LayoutParams circleParams = new FrameLayout.LayoutParams(100, 100);
-        circleParams.gravity = Gravity.CENTER;
-        ringOverlay.addView(circle, circleParams);
+        // Use the new circular drawable
+        ringOverlay.setBackgroundResource(R.drawable.scanner_ring);
 
-        // 2. The Play Button
         ImageView btnScan = new ImageView(this);
         btnScan.setImageResource(android.R.drawable.ic_media_play);
-        btnScan.setBackgroundColor(Color.parseColor("#AA000000")); // Dark BG
+        btnScan.setBackgroundColor(Color.parseColor("#AA000000"));
         btnScan.setPadding(20, 20, 20, 20);
         FrameLayout.LayoutParams btnParams = new FrameLayout.LayoutParams(150, 150);
         btnParams.gravity = Gravity.CENTER;
@@ -129,9 +114,8 @@ public class ScannerService extends Service {
 
         btnScan.setOnClickListener(v -> captureAndSolve());
 
-        // 3. Window Params
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                RING_SIZE, RING_SIZE, // The Window is the size of the detection area
+                RING_SIZE, RING_SIZE,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                 PixelFormat.TRANSLUCENT);
@@ -140,7 +124,6 @@ public class ScannerService extends Service {
         params.x = (screenWidth - RING_SIZE) / 2;
         params.y = screenHeight / 2;
 
-        // 4. Drag Logic
         ringOverlay.setOnTouchListener(new View.OnTouchListener() {
             int lastX, lastY, initialX, initialY;
             @Override
@@ -167,21 +150,17 @@ public class ScannerService extends Service {
 
     private void captureAndSolve() {
         if (mediaProjection == null) {
-            Toast.makeText(this, "Screen Capture Permission missing!", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Permission missing!", Toast.LENGTH_SHORT).show();
             return;
         }
+        Toast.makeText(this, "Scanning...", Toast.LENGTH_SHORT).show();
 
-        Toast.makeText(this, "Thinking...", Toast.LENGTH_SHORT).show();
-
-        // 1. Grab the latest image
         Image image = imageReader.acquireLatestImage();
         if (image == null) {
-            // Sometimes the buffer is empty, try again in 100ms
             new Handler(Looper.getMainLooper()).postDelayed(this::captureAndSolve, 100);
             return;
         }
 
-        // 2. Convert to Bitmap
         Image.Plane[] planes = image.getPlanes();
         ByteBuffer buffer = planes[0].getBuffer();
         int pixelStride = planes[0].getPixelStride();
@@ -192,7 +171,6 @@ public class ScannerService extends Service {
         bitmap.copyPixelsFromBuffer(buffer);
         image.close();
 
-        // 3. Crop to the Ring's area
         WindowManager.LayoutParams lp = (WindowManager.LayoutParams) ringOverlay.getLayoutParams();
         int cropX = Math.max(0, lp.x);
         int cropY = Math.max(0, lp.y);
@@ -201,30 +179,33 @@ public class ScannerService extends Service {
         
         Bitmap cropped = Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH);
 
-        // 4. Send to ML Kit
         InputImage inputImage = InputImage.fromBitmap(cropped, 0);
         recognizer.process(inputImage)
                 .addOnSuccessListener(visionText -> processTextResults(visionText, cropX, cropY))
-                .addOnFailureListener(e -> Toast.makeText(this, "OCR Failed: " + e.getMessage(), Toast.LENGTH_SHORT).show());
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "OCR Failed", e);
+                    Toast.makeText(this, "OCR Error: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                });
     }
 
     private void processTextResults(Text visionText, int offsetX, int offsetY) {
         List<DetectedLetter> letters = new ArrayList<>();
         StringBuilder rawString = new StringBuilder();
 
-        // Extract letters and their SCREEN coordinates
+        String fullText = visionText.getText();
+        Log.d(TAG, "OCR Raw Output: " + fullText); // Debug log
+
         for (Text.TextBlock block : visionText.getTextBlocks()) {
             for (Text.Line line : block.getLines()) {
                 for (Text.Element element : line.getElements()) {
                     String txt = element.getText().toUpperCase();
-                    // Filter for single letters A-Z
                     if (txt.matches("[A-Z]")) {
                         Rect box = element.getBoundingBox();
                         if (box != null) {
-                            // Adjust coordinate to be Screen Absolute (Ring Offset + Box Offset)
                             box.offset(offsetX, offsetY);
                             letters.add(new DetectedLetter(txt, box));
                             rawString.append(txt);
+                            Log.d(TAG, "Found letter: " + txt + " at " + box.toString());
                         }
                     }
                 }
@@ -232,57 +213,57 @@ public class ScannerService extends Service {
         }
 
         if (letters.isEmpty()) {
-            Toast.makeText(this, "No letters found! Adjust ring.", Toast.LENGTH_SHORT).show();
-            return;
+            Toast.makeText(this, "OCR saw nothing! Try moving the ring.", Toast.LENGTH_LONG).show();
+        } else {
+            Toast.makeText(this, "OCR Saw: " + rawString.toString(), Toast.LENGTH_LONG).show();
+            solveAndSwipe(letters, rawString.toString());
         }
-
-        Toast.makeText(this, "Found: " + rawString.toString(), Toast.LENGTH_SHORT).show();
-        solveAndSwipe(letters, rawString.toString());
     }
 
     private void solveAndSwipe(List<DetectedLetter> boardLetters, String inputString) {
         if (SwiperService.instance == null) {
-            Toast.makeText(this, "Swiper Service NOT Ready!", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Swiper Service not ready!", Toast.LENGTH_SHORT).show();
             return;
         }
 
         new Thread(() -> {
-            // 1. Solve
             List<String> words = trie.solve(inputString);
+            Log.d(TAG, "Dictionary found " + words.size() + " words for input: " + inputString);
             
-            // Logic: Longest first, remove short junk
             words.removeIf(w -> w.length() < 3);
             Collections.sort(words, (a, b) -> b.length() - a.length());
 
+            int swipedCount = 0;
             for (String word : words) {
-                // 2. Build Path
                 float[][] path = buildPath(word, boardLetters);
                 if (path != null) {
+                    Log.d(TAG, "Swiping word: " + word);
                     SwiperService.instance.swipe(path);
-                    try { Thread.sleep(300); } catch (Exception e) {}
+                    swipedCount++;
+                    try { Thread.sleep(400); } catch (Exception e) {}
                 }
+            }
+            if (swipedCount == 0 && !words.isEmpty()) {
+                 new Handler(Looper.getMainLooper()).post(() -> 
+                    Toast.makeText(this, "Could not trace path for words!", Toast.LENGTH_LONG).show());
             }
         }).start();
     }
 
     private float[][] buildPath(String word, List<DetectedLetter> board) {
         float[][] path = new float[word.length()][2];
-        for (DetectedLetter l : board) l.used = false; // Reset usage
+        for (DetectedLetter l : board) l.used = false;
 
         for (int i = 0; i < word.length(); i++) {
             String charStr = String.valueOf(word.charAt(i));
             DetectedLetter found = null;
-            
-            // Find closest matching unused letter (Basic greedy approach)
             for (DetectedLetter l : board) {
                 if (l.text.equals(charStr) && !l.used) {
                     found = l;
                     break;
                 }
             }
-            
-            if (found == null) return null; // Word not possible
-            
+            if (found == null) return null;
             found.used = true;
             path[i][0] = found.centerX;
             path[i][1] = found.centerY;
@@ -297,8 +278,6 @@ public class ScannerService extends Service {
 
         if (resultCode != -1 && data != null) {
             mediaProjection = projectionManager.getMediaProjection(resultCode, data);
-            
-            // Create Virtual Display to mirror screen to ImageReader
             virtualDisplay = mediaProjection.createVirtualDisplay("ScreenCapture",
                     screenWidth, screenHeight, screenDensity,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
