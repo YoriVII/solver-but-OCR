@@ -122,8 +122,6 @@ public class ScannerService extends Service {
         ImageView btnIcon = new ImageView(this);
         btnIcon.setImageResource(android.R.drawable.ic_media_play);
         btnIcon.setColorFilter(Color.WHITE); 
-        
-        // FIX 1: Make the icon "Transparent" to touches so the parent catches them
         btnIcon.setClickable(false);
         btnIcon.setFocusable(false);
         
@@ -148,39 +146,45 @@ public class ScannerService extends Service {
 
             @Override
             public boolean onTouch(View v, MotionEvent event) {
-                switch (event.getAction()) {
-                    case MotionEvent.ACTION_DOWN:
-                        initialX = params.x;
-                        initialY = params.y;
-                        initialTouchX = event.getRawX();
-                        initialTouchY = event.getRawY();
-                        isClick = true; 
-                        return true; // Important: We claimed this touch!
+                // Safety Block: If anything crashes here, don't kill the app!
+                try {
+                    switch (event.getAction()) {
+                        case MotionEvent.ACTION_DOWN:
+                            initialX = params.x;
+                            initialY = params.y;
+                            initialTouchX = event.getRawX();
+                            initialTouchY = event.getRawY();
+                            isClick = true; 
+                            return true;
 
-                    case MotionEvent.ACTION_MOVE:
-                        int deltaX = (int) (event.getRawX() - initialTouchX);
-                        int deltaY = (int) (event.getRawY() - initialTouchY);
-                        
-                        // FIX 2: Increased tolerance to 60px (Shaky hand proof)
-                        if (Math.abs(deltaX) > 60 || Math.abs(deltaY) > 60) { 
-                            isClick = false;
-                            params.x = initialX + deltaX;
-                            params.y = initialY + deltaY;
-                            wm.updateViewLayout(ringOverlay, params);
-                        }
-                        return true;
-
-                    case MotionEvent.ACTION_UP:
-                        if (isClick) {
-                            // FIX 3: Vibration Confirmation
-                            if (vibrator != null) {
-                                vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE));
+                        case MotionEvent.ACTION_MOVE:
+                            int deltaX = (int) (event.getRawX() - initialTouchX);
+                            int deltaY = (int) (event.getRawY() - initialTouchY);
+                            if (Math.abs(deltaX) > 60 || Math.abs(deltaY) > 60) { 
+                                isClick = false;
+                                params.x = initialX + deltaX;
+                                params.y = initialY + deltaY;
+                                wm.updateViewLayout(ringOverlay, params);
                             }
-                            flashRing();
-                            Toast.makeText(ScannerService.this, "Scanning...", Toast.LENGTH_SHORT).show();
-                            captureAndSolve();
-                        }
-                        return true;
+                            return true;
+
+                        case MotionEvent.ACTION_UP:
+                            if (isClick) {
+                                // Safe Vibrate
+                                try {
+                                    if (vibrator != null) {
+                                        vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE));
+                                    }
+                                } catch (Exception ignored) {}
+
+                                flashRing();
+                                Toast.makeText(ScannerService.this, "Scanning...", Toast.LENGTH_SHORT).show();
+                                captureAndSolve();
+                            }
+                            return true;
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Touch Error", e);
                 }
                 return false;
             }
@@ -211,7 +215,6 @@ public class ScannerService extends Service {
             if (image == null) image = imageReader.acquireNextImage();
 
             if (image == null) {
-                // If still null, the screen recorder is sleeping. Wake it up.
                 Toast.makeText(this, "Screen sleeping... Move ring and tap again.", Toast.LENGTH_SHORT).show();
                 return;
             }
@@ -241,7 +244,7 @@ public class ScannerService extends Service {
 
         } catch (Exception e) {
             Log.e(TAG, "Capture Error", e);
-            setupImageReader(); // Reset on crash
+            setupImageReader(); 
         }
     }
 
@@ -289,7 +292,6 @@ public class ScannerService extends Service {
                  return;
             }
 
-            // Show what we found before swiping
             new Handler(Looper.getMainLooper()).post(() -> 
                 Toast.makeText(this, "Found " + words.size() + " words! Swiping...", Toast.LENGTH_SHORT).show());
 
