@@ -16,12 +16,14 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # We skip the "setup-gradle" action entirely to avoid the version conflict
-    # and go straight to our wrapper
-    - name: Build with Gradle Wrapper
-      run: |
-        chmod +x gradlew
-        ./gradlew assembleDebug --no-daemon
+    - name: Setup Gradle 8.4
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.4'
+
+    - name: Build with Gradle 8.4
+      # We use 'gradle' directly, bypassing the broken ./gradlew script
+      run: gradle assembleDebug --no-daemon
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
