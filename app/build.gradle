@@ -1,0 +1,29 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.wordscapes.ocr'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.wordscapes.ocr"
+        minSdk 26 
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+    
+    // Java 8 is required for ML Kit
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+dependencies {
+    // The Brain: Google ML Kit for Text Recognition
+    implementation 'com.google.mlkit:text-recognition:16.0.0'
+    
+    // Standard UI tools
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.9.0'
+}
