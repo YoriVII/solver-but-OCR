@@ -22,6 +22,8 @@ import android.media.projection.MediaProjectionManager;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.Vibrator;
+import android.os.VibrationEffect;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Gravity;
@@ -52,12 +54,12 @@ public class ScannerService extends Service {
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
     private ImageReader imageReader;
+    private Vibrator vibrator;
     private int screenWidth, screenHeight, screenDensity;
     private TextRecognizer recognizer;
     private Trie trie;
 
     private static final String CHANNEL_ID = "OCR_Service_Channel";
-    // FIX 1: Adjusted Size (720 is the Goldilocks zone)
     private static final int RING_SIZE = 720; 
     private static final String TAG = "OCR_DEBUG";
 
@@ -87,6 +89,8 @@ public class ScannerService extends Service {
 
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         projectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        
         recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
         trie = new Trie();
         new Thread(() -> trie.loadDictionary(this)).start();
@@ -97,15 +101,12 @@ public class ScannerService extends Service {
         screenHeight = metrics.heightPixels;
         screenDensity = metrics.densityDpi;
 
-        // Initialize ImageReader
         setupImageReader();
-
         showRing();
     }
 
     private void setupImageReader() {
         if (imageReader != null) imageReader.close();
-        // Use flag 2 (USAGE_CPU_READ_OFTEN) + maxImages 2 to prevent buffer stalling
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2);
     }
 
@@ -121,6 +122,11 @@ public class ScannerService extends Service {
         ImageView btnIcon = new ImageView(this);
         btnIcon.setImageResource(android.R.drawable.ic_media_play);
         btnIcon.setColorFilter(Color.WHITE); 
+        
+        // FIX 1: Make the icon "Transparent" to touches so the parent catches them
+        btnIcon.setClickable(false);
+        btnIcon.setFocusable(false);
+        
         FrameLayout.LayoutParams btnParams = new FrameLayout.LayoutParams(180, 180); 
         btnParams.gravity = Gravity.CENTER;
         ringOverlay.addView(btnIcon, btnParams);
@@ -149,12 +155,14 @@ public class ScannerService extends Service {
                         initialTouchX = event.getRawX();
                         initialTouchY = event.getRawY();
                         isClick = true; 
-                        return true;
+                        return true; // Important: We claimed this touch!
 
                     case MotionEvent.ACTION_MOVE:
                         int deltaX = (int) (event.getRawX() - initialTouchX);
                         int deltaY = (int) (event.getRawY() - initialTouchY);
-                        if (Math.abs(deltaX) > 15 || Math.abs(deltaY) > 15) { // Increased threshold slightly
+                        
+                        // FIX 2: Increased tolerance to 60px (Shaky hand proof)
+                        if (Math.abs(deltaX) > 60 || Math.abs(deltaY) > 60) { 
                             isClick = false;
                             params.x = initialX + deltaX;
                             params.y = initialY + deltaY;
@@ -164,9 +172,12 @@ public class ScannerService extends Service {
 
                     case MotionEvent.ACTION_UP:
                         if (isClick) {
+                            // FIX 3: Vibration Confirmation
+                            if (vibrator != null) {
+                                vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE));
+                            }
                             flashRing();
-                            // FIX 2: Explicit Toast so we KNOW the click worked
-                            Toast.makeText(ScannerService.this, "Thinking...", Toast.LENGTH_SHORT).show();
+                            Toast.makeText(ScannerService.this, "Scanning...", Toast.LENGTH_SHORT).show();
                             captureAndSolve();
                         }
                         return true;
@@ -191,22 +202,17 @@ public class ScannerService extends Service {
 
     private void captureAndSolve() {
         if (mediaProjection == null) {
-            Toast.makeText(this, "Camera Permission Missing! Restart App.", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Permissions Lost. Restart App.", Toast.LENGTH_LONG).show();
             return;
         }
 
-        // FIX 3: Force a new frame capture cleanly
         try {
             Image image = imageReader.acquireLatestImage();
-            
-            // If the buffer is empty, it means the screen hasn't changed or it's stuck.
-            // We'll try to acquire the "Next" image instead.
-            if (image == null) {
-                image = imageReader.acquireNextImage();
-            }
+            if (image == null) image = imageReader.acquireNextImage();
 
             if (image == null) {
-                Toast.makeText(this, "Screen Buffer Empty - Move Ring & Retry", Toast.LENGTH_SHORT).show();
+                // If still null, the screen recorder is sleeping. Wake it up.
+                Toast.makeText(this, "Screen sleeping... Move ring and tap again.", Toast.LENGTH_SHORT).show();
                 return;
             }
 
@@ -231,13 +237,11 @@ public class ScannerService extends Service {
             InputImage inputImage = InputImage.fromBitmap(cropped, 0);
             recognizer.process(inputImage)
                     .addOnSuccessListener(visionText -> processTextResults(visionText, cropX, cropY))
-                    .addOnFailureListener(e -> Toast.makeText(this, "OCR Failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
+                    .addOnFailureListener(e -> Toast.makeText(this, "OCR Error: " + e.getMessage(), Toast.LENGTH_SHORT).show());
 
         } catch (Exception e) {
             Log.e(TAG, "Capture Error", e);
-            // If it crashes, reset the reader for next time
-            setupImageReader(); 
-            Toast.makeText(this, "Capture Error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            setupImageReader(); // Reset on crash
         }
     }
 
@@ -262,16 +266,15 @@ public class ScannerService extends Service {
         }
 
         if (letters.isEmpty()) {
-            Toast.makeText(this, "OCR saw nothing. Try moving the ring slightly.", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "No letters found.", Toast.LENGTH_SHORT).show();
         } else {
-            Toast.makeText(this, "OCR Saw: " + rawString.toString(), Toast.LENGTH_SHORT).show();
             solveAndSwipe(letters, rawString.toString());
         }
     }
 
     private void solveAndSwipe(List<DetectedLetter> boardLetters, String inputString) {
         if (SwiperService.instance == null) {
-            Toast.makeText(this, "Swiper Not Ready! Check Accessibility.", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Swiper Not Ready. Enable Accessibility!", Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -282,22 +285,20 @@ public class ScannerService extends Service {
 
             if (words.isEmpty()) {
                  new Handler(Looper.getMainLooper()).post(() -> 
-                    Toast.makeText(this, "No dictionary words found for: " + inputString, Toast.LENGTH_SHORT).show());
+                    Toast.makeText(this, "No dictionary match for: " + inputString, Toast.LENGTH_SHORT).show());
                  return;
             }
 
-            int swiped = 0;
+            // Show what we found before swiping
+            new Handler(Looper.getMainLooper()).post(() -> 
+                Toast.makeText(this, "Found " + words.size() + " words! Swiping...", Toast.LENGTH_SHORT).show());
+
             for (String word : words) {
                 float[][] path = buildPath(word, boardLetters);
                 if (path != null) {
                     SwiperService.instance.swipe(path);
-                    swiped++;
                     try { Thread.sleep(450); } catch (Exception e) {}
                 }
-            }
-            if (swiped == 0) {
-                 new Handler(Looper.getMainLooper()).post(() -> 
-                    Toast.makeText(this, "Could not trace letters on screen.", Toast.LENGTH_SHORT).show());
             }
         }).start();
     }
@@ -330,8 +331,6 @@ public class ScannerService extends Service {
 
         if (resultCode != -1 && data != null) {
             mediaProjection = projectionManager.getMediaProjection(resultCode, data);
-            
-            // Standardizing the Virtual Display setup
             virtualDisplay = mediaProjection.createVirtualDisplay("ScreenCapture",
                     screenWidth, screenHeight, screenDensity,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
