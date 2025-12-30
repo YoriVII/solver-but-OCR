@@ -24,7 +24,6 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.util.Log;
-import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -48,6 +47,7 @@ public class ScannerService extends Service {
 
     private WindowManager wm;
     private FrameLayout ringOverlay;
+    private GradientDrawable ringShape;
     private MediaProjectionManager projectionManager;
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
@@ -55,12 +55,13 @@ public class ScannerService extends Service {
     private int screenWidth, screenHeight, screenDensity;
     private TextRecognizer recognizer;
     private Trie trie;
-    private GestureDetector gestureDetector;
 
     private static final String CHANNEL_ID = "OCR_Service_Channel";
-    private static final int RING_SIZE = 600; 
+    // FIX 1: Make it BIGGER (850px)
+    private static final int RING_SIZE = 850; 
     private static final String TAG = "OCR_DEBUG";
 
+    // Helper for detecting letters
     private static class DetectedLetter {
         String text;
         Rect box;
@@ -105,22 +106,22 @@ public class ScannerService extends Service {
     private void showRing() {
         ringOverlay = new FrameLayout(this);
         
-        // 1. Programmatic Circle (No XML needed)
-        GradientDrawable shape = new GradientDrawable();
-        shape.setShape(GradientDrawable.OVAL);
-        shape.setColor(Color.parseColor("#4400FF00")); // Semi-transparent Green
-        shape.setStroke(8, Color.parseColor("#AA00FF00")); // Green Border
-        ringOverlay.setBackground(shape);
+        // Circular Shape (Green by default)
+        ringShape = new GradientDrawable();
+        ringShape.setShape(GradientDrawable.OVAL);
+        ringShape.setColor(Color.parseColor("#3300FF00")); 
+        ringShape.setStroke(10, Color.parseColor("#AA00FF00")); 
+        ringOverlay.setBackground(ringShape);
 
-        // 2. Play Icon in Center
+        // Play Icon
         ImageView btnIcon = new ImageView(this);
         btnIcon.setImageResource(android.R.drawable.ic_media_play);
         btnIcon.setColorFilter(Color.WHITE); 
-        FrameLayout.LayoutParams btnParams = new FrameLayout.LayoutParams(150, 150);
+        // Make icon bigger too
+        FrameLayout.LayoutParams btnParams = new FrameLayout.LayoutParams(200, 200); 
         btnParams.gravity = Gravity.CENTER;
         ringOverlay.addView(btnIcon, btnParams);
 
-        // 3. Window Params
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 RING_SIZE, RING_SIZE,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -131,30 +132,63 @@ public class ScannerService extends Service {
         params.x = (screenWidth - RING_SIZE) / 2;
         params.y = screenHeight / 2;
 
-        // 4. Smart Touch Logic (Tap vs Drag)
-        gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
-            @Override
-            public boolean onSingleTapConfirmed(MotionEvent e) {
-                // This fires when you just TAP (Scan)
-                Toast.makeText(ScannerService.this, "Tap Detected! Scanning...", Toast.LENGTH_SHORT).show();
-                captureAndSolve();
-                return true;
-            }
+        // FIX 2 & 3: Reliable Drag vs Click Logic
+        ringOverlay.setOnTouchListener(new View.OnTouchListener() {
+            private int initialX, initialY;
+            private float initialTouchX, initialTouchY;
+            private boolean isClick;
 
             @Override
-            public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
-                // This fires when you DRAG (Move)
-                params.x -= distanceX;
-                params.y -= distanceY;
-                wm.updateViewLayout(ringOverlay, params);
-                return true;
+            public boolean onTouch(View v, MotionEvent event) {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        initialX = params.x;
+                        initialY = params.y;
+                        initialTouchX = event.getRawX();
+                        initialTouchY = event.getRawY();
+                        isClick = true; // Assume click until moved
+                        return true;
+
+                    case MotionEvent.ACTION_MOVE:
+                        int deltaX = (int) (event.getRawX() - initialTouchX);
+                        int deltaY = (int) (event.getRawY() - initialTouchY);
+
+                        // If moved more than 10 pixels, it's a drag, NOT a click
+                        if (Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10) {
+                            isClick = false;
+                            params.x = initialX + deltaX;
+                            params.y = initialY + deltaY;
+                            wm.updateViewLayout(ringOverlay, params);
+                        }
+                        return true;
+
+                    case MotionEvent.ACTION_UP:
+                        if (isClick) {
+                            // FIX 4: Visual Feedback (Flash RED)
+                            flashRing();
+                            captureAndSolve();
+                        }
+                        return true;
+                }
+                return false;
             }
         });
 
-        // Apply the listener to the whole ring
-        ringOverlay.setOnTouchListener((v, event) -> gestureDetector.onTouchEvent(event));
-
         wm.addView(ringOverlay, params);
+    }
+
+    private void flashRing() {
+        // Flash Red to indicate "I heard you!"
+        ringShape.setColor(Color.parseColor("#55FF0000"));
+        ringShape.setStroke(10, Color.RED);
+        ringOverlay.setBackground(ringShape);
+        
+        // Revert back to Green after 200ms
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            ringShape.setColor(Color.parseColor("#3300FF00"));
+            ringShape.setStroke(10, Color.parseColor("#AA00FF00"));
+            ringOverlay.setBackground(ringShape);
+        }, 200);
     }
 
     private void captureAndSolve() {
@@ -165,7 +199,7 @@ public class ScannerService extends Service {
 
         Image image = imageReader.acquireLatestImage();
         if (image == null) {
-            // Retry briefly if buffer is empty
+            // Retry briefly
             new Handler(Looper.getMainLooper()).postDelayed(this::captureAndSolve, 50);
             return;
         }
@@ -203,7 +237,6 @@ public class ScannerService extends Service {
             for (Text.Line line : block.getLines()) {
                 for (Text.Element element : line.getElements()) {
                     String txt = element.getText().toUpperCase();
-                    // Basic cleanup: Only accept single letters
                     if (txt.matches("[A-Z]")) {
                         Rect box = element.getBoundingBox();
                         if (box != null) {
@@ -217,7 +250,7 @@ public class ScannerService extends Service {
         }
 
         if (letters.isEmpty()) {
-            Toast.makeText(this, "OCR saw nothing. Center the ring!", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "OCR: No letters found.", Toast.LENGTH_SHORT).show();
         } else {
             Toast.makeText(this, "OCR Saw: " + rawString.toString(), Toast.LENGTH_SHORT).show();
             solveAndSwipe(letters, rawString.toString());
@@ -226,7 +259,7 @@ public class ScannerService extends Service {
 
     private void solveAndSwipe(List<DetectedLetter> boardLetters, String inputString) {
         if (SwiperService.instance == null) {
-            Toast.makeText(this, "Swiper not ready! Check Accessibility Settings.", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Enable 'Wordscapes OCR' in Accessibility Settings!", Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -237,7 +270,7 @@ public class ScannerService extends Service {
 
             if (words.isEmpty()) {
                  new Handler(Looper.getMainLooper()).post(() -> 
-                    Toast.makeText(this, "No words found in dictionary!", Toast.LENGTH_SHORT).show());
+                    Toast.makeText(this, "No valid words found.", Toast.LENGTH_SHORT).show());
                  return;
             }
 
@@ -258,6 +291,7 @@ public class ScannerService extends Service {
         for (int i = 0; i < word.length(); i++) {
             String charStr = String.valueOf(word.charAt(i));
             DetectedLetter found = null;
+            // Greedily find closest matching letter
             for (DetectedLetter l : board) {
                 if (l.text.equals(charStr) && !l.used) {
                     found = l;
