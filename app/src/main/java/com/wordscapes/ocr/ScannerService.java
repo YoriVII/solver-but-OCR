@@ -48,7 +48,7 @@ public class ScannerService extends Service {
 
     private WindowManager wm;
     private FrameLayout ringOverlay;
-    private TextView statusText; // New Debug Text
+    private TextView statusText; // Debug Text inside the ring
     private GradientDrawable ringShape;
     private MediaProjectionManager projectionManager;
     private MediaProjection mediaProjection;
@@ -63,6 +63,7 @@ public class ScannerService extends Service {
     private static final int RING_SIZE = 720; 
     private static final String TAG = "OCR_DEBUG";
 
+    // Helper class for letter detection
     private static class DetectedLetter {
         String text;
         Rect box;
@@ -228,7 +229,6 @@ public class ScannerService extends Service {
 
             if (image == null) {
                 statusText.setText("NO IMAGE");
-                // Retry once
                 new Handler(Looper.getMainLooper()).postDelayed(this::captureAndSolve, 100);
                 return;
             }
@@ -284,7 +284,6 @@ public class ScannerService extends Service {
 
         if (letters.isEmpty()) {
             statusText.setText("NO TEXT");
-            // Retry visual feedback
             new Handler(Looper.getMainLooper()).postDelayed(() -> statusText.setText("READY"), 2000);
         } else {
             statusText.setText("FOUND: " + rawString.toString());
@@ -294,7 +293,7 @@ public class ScannerService extends Service {
 
     private void solveAndSwipe(List<DetectedLetter> boardLetters, String inputString) {
         if (SwiperService.instance == null) {
-            statusText.setText("NO HAND"); // Accessibility service is off
+            statusText.setText("NO HAND"); 
             return;
         }
 
