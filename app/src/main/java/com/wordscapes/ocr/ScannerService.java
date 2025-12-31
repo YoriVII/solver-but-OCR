@@ -48,7 +48,7 @@ public class ScannerService extends Service {
 
     private WindowManager wm;
     private FrameLayout ringOverlay;
-    private TextView statusText; // Debug Text inside the ring
+    private TextView statusText;
     private GradientDrawable ringShape;
     private MediaProjectionManager projectionManager;
     private MediaProjection mediaProjection;
@@ -63,7 +63,6 @@ public class ScannerService extends Service {
     private static final int RING_SIZE = 720; 
     private static final String TAG = "OCR_DEBUG";
 
-    // Helper class for letter detection
     private static class DetectedLetter {
         String text;
         Rect box;
@@ -84,7 +83,7 @@ public class ScannerService extends Service {
         createNotificationChannel();
         startForeground(1, new Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("Wordscapes Solver")
-                .setContentText("Tap ring to solve")
+                .setContentText("Active")
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
                 .build());
 
@@ -117,15 +116,12 @@ public class ScannerService extends Service {
 
     private void showRing() {
         ringOverlay = new FrameLayout(this);
-        
-        // 1. Draw Ring
         ringShape = new GradientDrawable();
         ringShape.setShape(GradientDrawable.OVAL);
         ringShape.setColor(Color.parseColor("#3300FF00")); 
         ringShape.setStroke(10, Color.parseColor("#AA00FF00")); 
         ringOverlay.setBackground(ringShape);
 
-        // 2. Add Status Text (Instead of Play Button)
         statusText = new TextView(this);
         statusText.setText("READY");
         statusText.setTextColor(Color.WHITE);
@@ -149,7 +145,6 @@ public class ScannerService extends Service {
         params.x = (screenWidth - RING_SIZE) / 2;
         params.y = screenHeight / 2;
 
-        // 3. Ultra-Simple Touch Listener
         ringOverlay.setOnTouchListener(new View.OnTouchListener() {
             private int initialX, initialY;
             private float initialTouchX, initialTouchY;
@@ -165,20 +160,17 @@ public class ScannerService extends Service {
                             initialTouchX = event.getRawX();
                             initialTouchY = event.getRawY();
                             isClick = true; 
-                            
-                            // VISUAL FEEDBACK: Change Text
                             statusText.setText("DOWN");
-                            ringShape.setColor(Color.parseColor("#5500FF00")); // Darker Green
+                            ringShape.setColor(Color.parseColor("#5500FF00")); 
                             ringOverlay.setBackground(ringShape);
                             return true;
 
                         case MotionEvent.ACTION_MOVE:
                             int deltaX = (int) (event.getRawX() - initialTouchX);
                             int deltaY = (int) (event.getRawY() - initialTouchY);
-                            
                             if (Math.abs(deltaX) > 50 || Math.abs(deltaY) > 50) { 
                                 isClick = false;
-                                statusText.setText("MOVING");
+                                statusText.setText("MOVE");
                                 params.x = initialX + deltaX;
                                 params.y = initialY + deltaY;
                                 wm.updateViewLayout(ringOverlay, params);
@@ -186,12 +178,9 @@ public class ScannerService extends Service {
                             return true;
 
                         case MotionEvent.ACTION_UP:
-                            // Reset Color
                             ringShape.setColor(Color.parseColor("#3300FF00"));
                             ringOverlay.setBackground(ringShape);
-
                             if (isClick) {
-                                statusText.setText("SCANNING...");
                                 performVibration();
                                 captureAndSolve();
                             } else {
@@ -199,9 +188,7 @@ public class ScannerService extends Service {
                             }
                             return true;
                     }
-                } catch (Exception e) {
-                    statusText.setText("ERROR");
-                }
+                } catch (Exception e) {}
                 return false;
             }
         });
@@ -211,19 +198,20 @@ public class ScannerService extends Service {
 
     private void performVibration() {
         try {
-            if (vibrator != null) {
-                vibrator.vibrate(VibrationEffect.createOneShot(100, VibrationEffect.DEFAULT_AMPLITUDE));
-            }
+            if (vibrator != null) vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE));
         } catch (Exception e) {}
     }
 
     private void captureAndSolve() {
+        // DIAGNOSTIC 1: Check Permissions
         if (mediaProjection == null) {
-            statusText.setText("NO PERM");
+            statusText.setText("RESTART APP");
+            Toast.makeText(this, "Lost Camera Permission. Please Restart App.", Toast.LENGTH_LONG).show();
             return;
         }
 
         try {
+            // DIAGNOSTIC 2: Check ImageReader
             Image image = imageReader.acquireLatestImage();
             if (image == null) image = imageReader.acquireNextImage();
 
@@ -233,6 +221,7 @@ public class ScannerService extends Service {
                 return;
             }
 
+            statusText.setText("READING...");
             Image.Plane[] planes = image.getPlanes();
             ByteBuffer buffer = planes[0].getBuffer();
             int pixelStride = planes[0].getPixelStride();
@@ -257,7 +246,7 @@ public class ScannerService extends Service {
                     .addOnFailureListener(e -> statusText.setText("OCR FAIL"));
 
         } catch (Exception e) {
-            statusText.setText("CAP FAIL");
+            statusText.setText("ERR");
             setupImageReader(); 
         }
     }
@@ -283,8 +272,8 @@ public class ScannerService extends Service {
         }
 
         if (letters.isEmpty()) {
-            statusText.setText("NO TEXT");
-            new Handler(Looper.getMainLooper()).postDelayed(() -> statusText.setText("READY"), 2000);
+            statusText.setText("EMPTY"); // Camera works, but saw no text
+            new Handler(Looper.getMainLooper()).postDelayed(() -> statusText.setText("READY"), 1500);
         } else {
             statusText.setText("FOUND: " + rawString.toString());
             solveAndSwipe(letters, rawString.toString());
@@ -293,7 +282,7 @@ public class ScannerService extends Service {
 
     private void solveAndSwipe(List<DetectedLetter> boardLetters, String inputString) {
         if (SwiperService.instance == null) {
-            statusText.setText("NO HAND"); 
+            statusText.setText("NO HAND"); // Permissions issue #2 (Accessibility)
             return;
         }
 
@@ -307,7 +296,7 @@ public class ScannerService extends Service {
                  return;
             }
 
-            new Handler(Looper.getMainLooper()).post(() -> statusText.setText("SWIPING " + words.size()));
+            new Handler(Looper.getMainLooper()).post(() -> statusText.setText("SOLVING (" + words.size() + ")"));
 
             for (String word : words) {
                 float[][] path = buildPath(word, boardLetters);
@@ -347,7 +336,9 @@ public class ScannerService extends Service {
         Intent data = intent.getParcelableExtra("DATA");
 
         if (resultCode != -1 && data != null) {
+            // Permission Handshake Success
             mediaProjection = projectionManager.getMediaProjection(resultCode, data);
+            
             virtualDisplay = mediaProjection.createVirtualDisplay("ScreenCapture",
                     screenWidth, screenHeight, screenDensity,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,

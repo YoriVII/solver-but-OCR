@@ -21,10 +21,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        
+        // KILL ZOMBIES: Stop the service if it's already running to ensure a fresh permission request
+        stopService(new Intent(this, ScannerService.class));
 
-        // Simple UI: Just a big "START" button
         setContentView(createSimpleUI());
-
         projectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
     }
 
@@ -51,19 +52,18 @@ public class MainActivity extends Activity {
     }
 
     private void startSequence() {
-        // 1. Check if we can draw over other apps
         if (!Settings.canDrawOverlays(this)) {
             Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                     Uri.parse("package:" + getPackageName()));
             startActivityForResult(intent, REQUEST_OVERLAY_PERM);
         } else {
-            // 2. If yes, ask to Record Screen
             requestScreenCapture();
         }
     }
 
     private void requestScreenCapture() {
         if (projectionManager != null) {
+            // This pops up the "Start Recording" dialog
             startActivityForResult(projectionManager.createScreenCaptureIntent(), REQUEST_SCREEN_CAPTURE);
         }
     }
@@ -74,18 +74,21 @@ public class MainActivity extends Activity {
             if (Settings.canDrawOverlays(this)) {
                 requestScreenCapture();
             } else {
-                Toast.makeText(this, "Overlay Permission is required!", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Overlay Permission Required!", Toast.LENGTH_SHORT).show();
             }
         } else if (requestCode == REQUEST_SCREEN_CAPTURE) {
-            if (resultCode == RESULT_OK) {
-                // 3. Success! Start the Service and pass the permission token
+            if (resultCode == RESULT_OK && data != null) {
+                Toast.makeText(this, "Camera Permission Granted! Starting...", Toast.LENGTH_SHORT).show();
+                
                 Intent serviceIntent = new Intent(this, ScannerService.class);
                 serviceIntent.putExtra("RESULT_CODE", resultCode);
                 serviceIntent.putExtra("DATA", data);
+                
+                // CRITICAL: Must use startForegroundService for Android 10+
                 startForegroundService(serviceIntent);
-                finish(); // Close this screen
+                finish(); 
             } else {
-                Toast.makeText(this, "Screen Capture denied. Cannot scan.", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Screen Capture Denied. App cannot work.", Toast.LENGTH_LONG).show();
             }
         }
     }
