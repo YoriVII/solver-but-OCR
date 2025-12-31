@@ -22,8 +22,10 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         
-        // KILL ZOMBIES: Stop the service if it's already running to ensure a fresh permission request
+        // Ensure clean slate
         stopService(new Intent(this, ScannerService.class));
+        ScannerService.permissionIntent = null;
+        ScannerService.permissionResultCode = 0;
 
         setContentView(createSimpleUI());
         projectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
@@ -63,7 +65,6 @@ public class MainActivity extends Activity {
 
     private void requestScreenCapture() {
         if (projectionManager != null) {
-            // This pops up the "Start Recording" dialog
             startActivityForResult(projectionManager.createScreenCaptureIntent(), REQUEST_SCREEN_CAPTURE);
         }
     }
@@ -78,17 +79,19 @@ public class MainActivity extends Activity {
             }
         } else if (requestCode == REQUEST_SCREEN_CAPTURE) {
             if (resultCode == RESULT_OK && data != null) {
-                Toast.makeText(this, "Camera Permission Granted! Starting...", Toast.LENGTH_SHORT).show();
+                
+                // --- THE FIX: DIRECT INJECTION ---
+                ScannerService.permissionResultCode = resultCode;
+                ScannerService.permissionIntent = data;
+                // ---------------------------------
+
+                Toast.makeText(this, "Permission Captured!", Toast.LENGTH_SHORT).show();
                 
                 Intent serviceIntent = new Intent(this, ScannerService.class);
-                serviceIntent.putExtra("RESULT_CODE", resultCode);
-                serviceIntent.putExtra("DATA", data);
-                
-                // CRITICAL: Must use startForegroundService for Android 10+
                 startForegroundService(serviceIntent);
                 finish(); 
             } else {
-                Toast.makeText(this, "Screen Capture Denied. App cannot work.", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Denied.", Toast.LENGTH_LONG).show();
             }
         }
     }

@@ -46,6 +46,11 @@ import java.util.List;
 
 public class ScannerService extends Service {
 
+    // --- STATIC PERMISSION HOLDER (The Fix) ---
+    public static Intent permissionIntent = null;
+    public static int permissionResultCode = 0;
+    // ------------------------------------------
+
     private WindowManager wm;
     private FrameLayout ringOverlay;
     private TextView statusText;
@@ -61,14 +66,12 @@ public class ScannerService extends Service {
 
     private static final String CHANNEL_ID = "OCR_Service_Channel";
     private static final int RING_SIZE = 720; 
-    private static final String TAG = "OCR_DEBUG";
 
     private static class DetectedLetter {
         String text;
         Rect box;
         float centerX, centerY;
         boolean used = false;
-
         DetectedLetter(String text, Rect box) {
             this.text = text;
             this.box = box;
@@ -104,8 +107,31 @@ public class ScannerService extends Service {
 
             setupImageReader();
             showRing();
+            
+            // ATTEMPT TO INITIALIZE IMMEDIATELY
+            initMediaProjection();
+
         } catch (Exception e) {
-            Log.e(TAG, "Startup Error", e);
+            Log.e("OCR", "Error", e);
+        }
+    }
+
+    private void initMediaProjection() {
+        // If we already have it, don't recreate
+        if (mediaProjection != null) return;
+
+        // Check the Static Variables
+        if (permissionResultCode != 0 && permissionIntent != null) {
+            mediaProjection = projectionManager.getMediaProjection(permissionResultCode, permissionIntent);
+            
+            virtualDisplay = mediaProjection.createVirtualDisplay("ScreenCapture",
+                    screenWidth, screenHeight, screenDensity,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    imageReader.getSurface(), null, null);
+                    
+            // Feedback
+            new Handler(Looper.getMainLooper()).post(() -> 
+                Toast.makeText(this, "Projection Initialized!", Toast.LENGTH_SHORT).show());
         }
     }
 
@@ -128,12 +154,7 @@ public class ScannerService extends Service {
         statusText.setTextSize(20);
         statusText.setTypeface(null, android.graphics.Typeface.BOLD);
         statusText.setGravity(Gravity.CENTER);
-        
-        FrameLayout.LayoutParams textParams = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT, 
-                FrameLayout.LayoutParams.WRAP_CONTENT);
-        textParams.gravity = Gravity.CENTER;
-        ringOverlay.addView(statusText, textParams);
+        ringOverlay.addView(statusText);
 
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 RING_SIZE, RING_SIZE,
@@ -166,13 +187,12 @@ public class ScannerService extends Service {
                             return true;
 
                         case MotionEvent.ACTION_MOVE:
-                            int deltaX = (int) (event.getRawX() - initialTouchX);
-                            int deltaY = (int) (event.getRawY() - initialTouchY);
-                            if (Math.abs(deltaX) > 50 || Math.abs(deltaY) > 50) { 
+                            if (Math.abs(event.getRawX() - initialTouchX) > 50 || 
+                                Math.abs(event.getRawY() - initialTouchY) > 50) { 
                                 isClick = false;
                                 statusText.setText("MOVE");
-                                params.x = initialX + deltaX;
-                                params.y = initialY + deltaY;
+                                params.x = initialX + (int)(event.getRawX() - initialTouchX);
+                                params.y = initialY + (int)(event.getRawY() - initialTouchY);
                                 wm.updateViewLayout(ringOverlay, params);
                             }
                             return true;
@@ -197,27 +217,25 @@ public class ScannerService extends Service {
     }
 
     private void performVibration() {
-        try {
-            if (vibrator != null) vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE));
-        } catch (Exception e) {}
+        try { if (vibrator != null) vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE)); } catch (Exception e) {}
     }
 
     private void captureAndSolve() {
-        // DIAGNOSTIC 1: Check Permissions
+        // Try to init if missing
+        if (mediaProjection == null) initMediaProjection();
+
         if (mediaProjection == null) {
-            statusText.setText("RESTART APP");
-            Toast.makeText(this, "Lost Camera Permission. Please Restart App.", Toast.LENGTH_LONG).show();
+            statusText.setText("NO PERM (Err: " + permissionResultCode + ")");
             return;
         }
 
         try {
-            // DIAGNOSTIC 2: Check ImageReader
             Image image = imageReader.acquireLatestImage();
             if (image == null) image = imageReader.acquireNextImage();
 
             if (image == null) {
                 statusText.setText("NO IMAGE");
-                new Handler(Looper.getMainLooper()).postDelayed(this::captureAndSolve, 100);
+                new Handler(Looper.getMainLooper()).postDelayed(this::captureAndSolve, 150);
                 return;
             }
 
@@ -246,7 +264,7 @@ public class ScannerService extends Service {
                     .addOnFailureListener(e -> statusText.setText("OCR FAIL"));
 
         } catch (Exception e) {
-            statusText.setText("ERR");
+            statusText.setText("CAP FAIL");
             setupImageReader(); 
         }
     }
@@ -272,8 +290,8 @@ public class ScannerService extends Service {
         }
 
         if (letters.isEmpty()) {
-            statusText.setText("EMPTY"); // Camera works, but saw no text
-            new Handler(Looper.getMainLooper()).postDelayed(() -> statusText.setText("READY"), 1500);
+            statusText.setText("EMPTY"); 
+            new Handler(Looper.getMainLooper()).postDelayed(() -> statusText.setText("READY"), 1000);
         } else {
             statusText.setText("FOUND: " + rawString.toString());
             solveAndSwipe(letters, rawString.toString());
@@ -282,7 +300,7 @@ public class ScannerService extends Service {
 
     private void solveAndSwipe(List<DetectedLetter> boardLetters, String inputString) {
         if (SwiperService.instance == null) {
-            statusText.setText("NO HAND"); // Permissions issue #2 (Accessibility)
+            statusText.setText("NO HAND"); 
             return;
         }
 
@@ -296,7 +314,7 @@ public class ScannerService extends Service {
                  return;
             }
 
-            new Handler(Looper.getMainLooper()).post(() -> statusText.setText("SOLVING (" + words.size() + ")"));
+            new Handler(Looper.getMainLooper()).post(() -> statusText.setText("SWIPING " + words.size()));
 
             for (String word : words) {
                 float[][] path = buildPath(word, boardLetters);
@@ -332,18 +350,8 @@ public class ScannerService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        int resultCode = intent.getIntExtra("RESULT_CODE", -1);
-        Intent data = intent.getParcelableExtra("DATA");
-
-        if (resultCode != -1 && data != null) {
-            // Permission Handshake Success
-            mediaProjection = projectionManager.getMediaProjection(resultCode, data);
-            
-            virtualDisplay = mediaProjection.createVirtualDisplay("ScreenCapture",
-                    screenWidth, screenHeight, screenDensity,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    imageReader.getSurface(), null, null);
-        }
+        // Retry init in case it was missed in onCreate
+        initMediaProjection();
         return START_NOT_STICKY;
     }
 
